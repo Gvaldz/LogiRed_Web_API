@@ -1,0 +1,243 @@
+package infrastructure
+
+import (
+	users "LogiredAPIWeb/src/internal/users/domain"
+	user "LogiredAPIWeb/src/internal/users/domain/entities"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+type UserRepository struct {
+	DB *sql.DB
+}
+
+func NewUserRepository(DB *sql.DB) users.UserRepository {
+	return &UserRepository{DB: DB}
+}
+
+func (r *UserRepository) CreateUser(u user.User) (user.User, error) {
+
+	query := "INSERT INTO users (name, lastname, birthdate, numberphone, email, password, usertype, image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING iduser"
+
+	var id int32
+	err := r.DB.QueryRow(query, u.Name, u.Lastname, u.Birthdate, u.NumberPhone, u.Email, u.Password, u.UserType, u.ImageURL).Scan(&id)
+	if err != nil {
+		return user.User{}, fmt.Errorf("error al crear usuario: %w", err)
+	}
+
+	return user.User{
+		IdUser:      id,
+		Name:        u.Name,
+		Lastname:    u.Lastname,
+		Email:       u.Email,
+		UserType:    u.UserType,
+		NumberPhone: u.NumberPhone,
+		Birthdate:   u.Birthdate,
+		ImageURL:    u.ImageURL,
+	}, nil
+}
+
+func (r *UserRepository) GetAllUsers() ([]user.User, error) {
+	query := "SELECT iduser, name, lastname, email, usertype FROM users"
+	rows, err := r.DB.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("error al obtener usuarios: %w", err)
+	}
+	defer rows.Close()
+
+	var usersList []user.User
+	for rows.Next() {
+		var u user.User
+		if err := rows.Scan(&u.IdUser, &u.Name, &u.Lastname, &u.Email, &u.UserType); err != nil {
+			return nil, fmt.Errorf("error al escanear user: %w", err)
+		}
+		usersList = append(usersList, u)
+	}
+
+	return usersList, nil
+}
+
+func (r *UserRepository) GetUserByID(iduser int32) (user.User, error) {
+	if r.DB == nil {
+		return user.User{}, fmt.Errorf("database connection is nil")
+	}
+
+	var u user.User
+	query := "SELECT iduser, name, lastname, birthdate, numberphone, email, usertype, image_url FROM users WHERE iduser = $1"
+
+	err := r.DB.QueryRow(query, iduser).Scan(&u.IdUser, &u.Name, &u.Lastname, &u.Birthdate, &u.NumberPhone, &u.Email, &u.UserType, &u.ImageURL)
+
+	if err != nil {
+		return u, fmt.Errorf("error al obtener usuario: %w", err)
+	}
+	return u, nil
+}
+
+func (r *UserRepository) GetUserByEmail(email string) (user.User, error) {
+	var u user.User
+	query := "SELECT iduser, name, lastname, email, password, usertype FROM users WHERE email = $1"
+
+	err := r.DB.QueryRow(query, email).Scan(
+		&u.IdUser,
+		&u.Name,
+		&u.Lastname,
+		&u.Email, // CORREGIDO
+		&u.Password,
+		&u.UserType,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return u, fmt.Errorf("usuario no encontrado")
+		}
+		return u, fmt.Errorf("error al obtener usuario por email: %w", err)
+	}
+	return u, nil
+}
+
+func (r *UserRepository) UpdateUser(id int32, u user.User) error {
+	setClauses := []string{}
+	args := []interface{}{}
+	argCounter := 1
+
+	if u.Name != "" {
+		setClauses = append(setClauses, fmt.Sprintf("name = $%d", argCounter))
+		args = append(args, u.Name)
+		argCounter++
+	}
+	if u.Lastname != "" {
+		setClauses = append(setClauses, fmt.Sprintf("lastname = $%d", argCounter))
+		args = append(args, u.Lastname)
+		argCounter++
+	}
+	if u.Email != "" {
+		setClauses = append(setClauses, fmt.Sprintf("email = $%d", argCounter))
+		args = append(args, u.Email)
+		argCounter++
+	}
+	if u.NumberPhone != "" {
+		setClauses = append(setClauses, fmt.Sprintf("numberphone = $%d", argCounter))
+		args = append(args, u.NumberPhone)
+		argCounter++
+	}
+	if u.Birthdate != "" {
+		setClauses = append(setClauses, fmt.Sprintf("birthdate = $%d", argCounter))
+		args = append(args, u.Birthdate)
+		argCounter++
+	}
+	if u.ImageURL != "" {
+		setClauses = append(setClauses, fmt.Sprintf("image_url = $%d", argCounter))
+		args = append(args, u.ImageURL)
+		argCounter++
+	}
+
+	if len(setClauses) == 0 {
+		return errors.New("no hay campos para actualizar")
+	}
+
+	var exists int
+	err := r.DB.QueryRow("SELECT COUNT(*) FROM users WHERE iduser = $1", id).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("error al verificar usuario: %w", err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("usuario no encontrado")
+	}
+
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE users SET %s WHERE iduser = $%d", strings.Join(setClauses, ", "), argCounter)
+
+	result, err := r.DB.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("error al actualizar usuario: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	fmt.Printf(">>> RowsAffected: %d\n", rows)
+
+	return nil
+}
+
+func (r *UserRepository) RessetPassword(email string, newHashedPassword string) error {
+	query := "UPDATE users SET password = $1 WHERE email = $2"
+
+	result, err := r.DB.Exec(query, newHashedPassword, email)
+	if err != nil {
+		return fmt.Errorf("error al actualizar contraseña por email: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error al verificar filas afectadas: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("no se encontró ningún usuario con el email: %s", email)
+	}
+
+	return nil
+}
+
+func (r *UserRepository) UpdatePassword(id int32, newHashedPassword string) error {
+	query := "UPDATE users SET password = $1 WHERE iduser = $2"
+	result, err := r.DB.Exec(query, newHashedPassword, id)
+	if err != nil {
+		return fmt.Errorf("error al actualizar contraseña: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error al verificar actualización de contraseña: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("usuario no encontrado")
+	}
+
+	return nil
+}
+
+func (r *UserRepository) DeleteUser(id int32) error {
+	query := "DELETE FROM users WHERE iduser = $1"
+	result, err := r.DB.Exec(query, id)
+	if err != nil {
+		return fmt.Errorf("error al eliminar usuario: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error al verificar eliminación: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("usuario no encontrado")
+	}
+
+	return nil
+}
+
+func (r *UserRepository) CreateUserTx(tx *sql.Tx, u user.User) (user.User, error) {
+	query := "INSERT INTO users (name, lastname, birthdate, numberphone, email, password, usertype, image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING iduser"
+
+	var id int32
+	err := tx.QueryRow(query, u.Name, u.Lastname, u.Birthdate, u.NumberPhone, u.Email, u.Password, u.UserType, u.ImageURL).Scan(&id)
+	if err != nil {
+		return user.User{}, fmt.Errorf("error al crear usuario: %w", err)
+	}
+
+	return user.User{
+		IdUser:      id,
+		Name:        u.Name,
+		Lastname:    u.Lastname,
+		Email:       u.Email,
+		UserType:    u.UserType,
+		NumberPhone: u.NumberPhone,
+		Birthdate:   u.Birthdate,
+		ImageURL:    u.ImageURL,
+	}, nil
+}
+
+func (r *UserRepository) BeginTx() (*sql.Tx, error) {
+	return r.DB.Begin()
+}

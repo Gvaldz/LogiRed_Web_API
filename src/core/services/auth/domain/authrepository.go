@@ -1,0 +1,12 @@
+package domain
+
+import (
+	user "LogiredAPIWeb/src/internal/users/domain/entities"
+)
+
+type AuthRepository interface {
+	FindUserByEmail(email string) (user.User, error)
+	FindUserByID(id int32) (user.User, error)
+	UpdateLastLogin(userID int32) error
+	FindDriverApproved(userID int32) (bool, error)
+}

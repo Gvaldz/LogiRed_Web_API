@@ -1,0 +1,61 @@
+package application
+
+import (
+	"LogiredAPIWeb/src/core"
+	auth "LogiredAPIWeb/src/core/services/auth/domain"
+	user_repo "LogiredAPIWeb/src/internal/users/domain"
+	user "LogiredAPIWeb/src/internal/users/domain/entities"
+	"errors"
+)
+
+type Login struct {
+	authRepo     auth.AuthRepository
+	userRepo     user_repo.UserRepository
+	tokenService auth.TokenService
+	hasher       core.PasswordHasher
+}
+
+func NewLogin(
+	authRepo auth.AuthRepository,
+	userRepo user_repo.UserRepository,
+	tokenService auth.TokenService,
+	hasher core.PasswordHasher,
+) *Login {
+	return &Login{
+		authRepo:     authRepo,
+		userRepo:     userRepo,
+		tokenService: tokenService,
+		hasher:       hasher,
+	}
+}
+
+func (uc *Login) Execute(credentials user.User) (auth.Token, error) {
+	user, err := uc.authRepo.FindUserByEmail(credentials.Email)
+	if err != nil {
+		return auth.Token{}, errors.New("datos incorrectos")
+	}
+
+	if err := uc.hasher.Compare(user.Password, credentials.Password); err != nil {
+		return auth.Token{}, errors.New("datos incorrectos")
+	}
+
+	approved := false
+
+	if user.UserType == 2 {
+		approved, err = uc.authRepo.FindDriverApproved(user.IdUser)
+		if err != nil {
+			return auth.Token{}, errors.New("error al obtener datos del conductor")
+		}
+	}
+
+	token, err := uc.tokenService.GenerateToken(user.IdUser, user.Email, user.UserType, approved)
+	if err != nil {
+		return auth.Token{}, errors.New("fallo en generar token")
+	}
+
+	go func() {
+		_ = uc.authRepo.UpdateLastLogin(user.IdUser)
+	}()
+
+	return token, nil
+}
